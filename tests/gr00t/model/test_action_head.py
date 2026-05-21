@@ -160,7 +160,7 @@ class TestActionHeadGetAction:
 
 
 class TestEMAActionHeadMemory:
-    def test_reset_eval_memory_clears_all_cached_state(self, ema_action_head):
+    def test_reset_eval_memory_clears_all_memory(self, ema_action_head):
         head, _ = ema_action_head
         head.vl_mem = torch.randn(1, 2, 3)
         head.state_mem = torch.randn(1, 1, 3)
