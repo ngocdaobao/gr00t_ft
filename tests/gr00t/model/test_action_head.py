@@ -21,7 +21,7 @@ and feed it synthetic backbone output tensors.
 """
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
-from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7ActionHead
+from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7ActionHead, Gr00tN1d7ActionHead_EMA
 import pytest
 import torch
 from transformers.feature_extraction_utils import BatchFeature
@@ -72,6 +72,14 @@ def _small_config(**overrides) -> Gr00tN1d7Config:
 def action_head():
     config = _small_config()
     head = Gr00tN1d7ActionHead(config)
+    head.eval()
+    return head, config
+
+
+@pytest.fixture
+def ema_action_head():
+    config = _small_config(use_ema=True, ema_momentum=0.7)
+    head = Gr00tN1d7ActionHead_EMA(config)
     head.eval()
     return head, config
 
@@ -149,6 +157,46 @@ class TestActionHeadGetAction:
             action_input,
         )
         assert out["action_pred"].shape[0] == 1
+
+
+class TestEMAActionHeadMemory:
+    def test_reset_eval_memory_clears_all_cached_state(self, ema_action_head):
+        head, _ = ema_action_head
+        head.vl_mem = torch.randn(1, 2, 3)
+        head.state_mem = torch.randn(1, 1, 3)
+        head.vl_mem_eval = torch.randn(1, 2, 3)
+        head.state_mem_eval = torch.randn(1, 1, 3)
+
+        head.reset_eval_memory()
+
+        assert head.vl_mem is None
+        assert head.state_mem is None
+        assert head.vl_mem_eval is None
+        assert head.state_mem_eval is None
+
+    def test_forward_resets_train_memory_when_seq_len_changes(self, ema_action_head):
+        head, config = ema_action_head
+        head.train()
+
+        head.forward(_make_backbone_output(config, seq_len=8), _make_action_input(config))
+        out = head.forward(_make_backbone_output(config, seq_len=5), _make_action_input(config))
+
+        assert head.vl_mem.shape[1] == 5
+        assert out["backbone_features"].shape[1] == 5
+
+    def test_get_action_resets_eval_memory_when_seq_len_changes(self, ema_action_head):
+        head, config = ema_action_head
+
+        first_action_input = _make_action_input(config)
+        del first_action_input["action"]
+        head.get_action(_make_backbone_output(config, seq_len=8), first_action_input)
+
+        second_action_input = _make_action_input(config)
+        del second_action_input["action"]
+        out = head.get_action(_make_backbone_output(config, seq_len=5), second_action_input)
+
+        assert head.vl_mem_eval.shape[1] == 5
+        assert out["backbone_features"].shape[1] == 5
 
 
 class TestActionHeadEncodeFeatures:
