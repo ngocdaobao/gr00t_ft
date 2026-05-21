@@ -24,6 +24,9 @@ STATE_DROPOUT_PROB=""
 USE_HISTORY=0
 WINDOW_SIZE=""
 EXTRA_ARGS=()
+USE_PEFT=0
+USE_EMA=0
+EMA_MOMENTUM=0.9
 
 usage() {
     cat <<'EOF'
@@ -37,6 +40,8 @@ Usage: bash examples/finetune.sh \
   [--use-history] \
   [--window-size <int>] \
   [--save-only-model] \
+    [--use_ema | --use-ema] \
+    [--ema_momentum <float> | --ema-momentum <float>] \
   [-- <extra launch_finetune.py args>...]
 EOF
 }
@@ -81,6 +86,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --window-size)
             WINDOW_SIZE="$2"
+            shift 2
+            ;;
+        --use_ema|--use-ema)
+            USE_EMA=1
+            shift
+            ;;
+        --ema_momentum|--ema-momentum)
+            EMA_MOMENTUM="$2"
             shift 2
             ;;
         --save-only-model)
@@ -153,6 +166,11 @@ fi
 
 if [ -n "$STATE_DROPOUT_PROB" ]; then
     LAUNCH_CMD+=(--state_dropout_prob "$STATE_DROPOUT_PROB")
+fi
+
+if [ "$USE_EMA" = "1" ]; then
+    LAUNCH_CMD+=(--use_ema)
+    LAUNCH_CMD+=(--ema_momentum "$EMA_MOMENTUM")
 fi
 
 if [ "$USE_HISTORY" = "1" ]; then

@@ -25,13 +25,14 @@ from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
 
 from .policy import BasePolicy, PolicyWrapper
+from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
 
 
 def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
@@ -96,11 +97,20 @@ class Gr00tPolicy(BasePolicy):
             embodiment_tag = EmbodimentTag.resolve(embodiment_tag)
         model_dir = Path(model_path)
 
-        # Load the pretrained model and move to target device with bfloat16 precision
-        model = AutoModel.from_pretrained(model_dir)
+        # Load config and weights from the local checkpoint directory
+        model_config = AutoConfig.from_pretrained(model_dir, local_files_only=True)
+        model = AutoModel.from_pretrained(
+            model_dir,
+            config=model_config,
+            local_files_only=True,
+        )
         model.eval()  # Set model to evaluation mode
         model.to(device=device, dtype=torch.bfloat16)
         self.model = model
+        if hasattr(self.model, "action_head"):
+            print(f"Action head: {type(self.model.action_head).__name__}")
+        else:
+            print("Action head: <missing>")
 
         # Load the processor for input/output transformation.
         # Training saves processor files under a "processor/" subdirectory, but

@@ -124,6 +124,8 @@ class Gr00tN1d7Config(PretrainedConfig):
     # Use history frames
     use_history: bool = False
     window_size: int = 5
+    use_ema: bool = False
+    ema_momentum: float = 0.9
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

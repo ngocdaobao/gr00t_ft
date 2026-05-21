@@ -83,6 +83,15 @@ if __name__ == "__main__":
     config.model.color_jitter_params = ft_config.color_jitter_params
     config.model.use_history = ft_config.use_history
     config.model.window_size = ft_config.window_size
+    config.model.use_ema = ft_config.use_ema
+    config.model.ema_momentum = ft_config.ema_momentum
+    # LoRA / PEFT options
+    config.model.use_peft = ft_config.use_peft
+    config.model.lora_r = ft_config.lora_r
+    config.model.lora_alpha = ft_config.lora_alpha
+    config.model.lora_dropout = ft_config.lora_dropout
+    config.model.lora_action_head_only = ft_config.lora_action_head_only
+    config.model.lora_target_modules = ft_config.lora_target_modules
     if ft_config.extra_augmentation_config:
         config.model.extra_augmentation_config = json.loads(ft_config.extra_augmentation_config)
     else:

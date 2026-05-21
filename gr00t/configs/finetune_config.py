@@ -164,3 +164,14 @@ class FinetuneConfig:
 
     use_history: bool = False
     window_size: int = 1
+
+    use_ema: bool = False
+    ema_momentum: float = 0.9
+
+    # --- LoRA / PEFT options ---
+    use_peft: bool = False
+    lora_r: int = 32
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    lora_action_head_only: bool = True
+    lora_target_modules: str | None = None

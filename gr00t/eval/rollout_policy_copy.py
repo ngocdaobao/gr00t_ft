@@ -433,6 +433,9 @@ def create_gr00t_sim_policy(
             setup_tensorrt_engines(gr00t_policy, trt_engine_path, mode=trt_mode)
         policy = Gr00tSimPolicyWrapper(gr00t_policy)
 
+    if use_history:
+        from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7ActionHead_history
+        
     return policy
 
 
@@ -577,7 +580,7 @@ if __name__ == "__main__":
     if args.video_dir is not None:
         libero_dir = Path(args.video_dir).parent
         result_file =  f"{libero_dir}/results.txt"
-        with open(result_file, "a") as f:
+        with open(result_file, "w") as f:
             f.write(f"Results for {args.env_name}:\n")
             f.write(f"Success rate: {np.mean(results[1])}\n")
             f.write(f"Episode successes: {results[1]}\n")

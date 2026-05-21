@@ -195,7 +195,7 @@ class PolicyClient(BasePolicy):
     def kill_server(self):
         """
         Kill the server.
-        """
+        """ 
         self.call_endpoint("kill", requires_input=False)
 
     def call_endpoint(

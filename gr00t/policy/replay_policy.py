@@ -148,7 +148,7 @@ class ReplayPolicy(BasePolicy):
             - language: dict[str, list[list[str]]]
                 - Shape: (B, T) where each element is a string
                 - T: temporal horizon (typically 1 for language)
-
+ 
         Args:
             observation: Dictionary containing video, state, and language modalities
 

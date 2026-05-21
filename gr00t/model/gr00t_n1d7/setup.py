@@ -27,7 +27,7 @@ from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
 from gr00t.data.dataset.factory import DatasetFactory
 from gr00t.experiment.dist_utils import get_rank
 from gr00t.model.base.model_pipeline import ModelPipeline
-from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7, Gr00tN1d7ActionHead_history
+from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7, Gr00tN1d7ActionHead_history, Gr00tN1d7ActionHead_EMA
 from gr00t.model.gr00t_n1d7.processing_gr00t_n1d7 import Gr00tN1d7Processor
 from gr00t.model.registry import register_model
 
@@ -94,12 +94,15 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
             )
-
+            logging.info(f"USE EMA: {self.config.model.use_ema}")
             if self.config.model.use_history:
                 history_action_head = Gr00tN1d7ActionHead_history(window_size=self.config.model.window_size, config=self.config.model)
                 history_action_head.load_state_dict(model.action_head.state_dict(), strict=False)
                 model.action_head = history_action_head
-    
+            elif self.config.model.use_ema:
+                ema_action_head = Gr00tN1d7ActionHead_EMA(config=self.config.model)
+                ema_action_head.load_state_dict(model.action_head.state_dict(), strict=False)
+                model.action_head = ema_action_head
 
             missing_keys = loading_info.get("missing_keys", [])
             mask_token_missing = any("mask_token" in key for key in missing_keys)

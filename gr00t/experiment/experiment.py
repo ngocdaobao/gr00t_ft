@@ -188,10 +188,28 @@ def run(config: Config):
     pipeline = MODEL_REGISTRY.get(type(config.model))(config, save_cfg_dir)
     pipeline.setup()
     model = pipeline.return_model()
+
+    # Optionally wrap model with LoRA/PEFT adapters
+    if hasattr(config.model, "use_peft") and config.model.use_peft:
+        try:
+            from gr00t.utils.peft import get_lora_model
+
+            model = get_lora_model(
+                model,
+                rank=getattr(config.model, "lora_r", 32),
+                lora_alpha=getattr(config.model, "lora_alpha", 16),
+                lora_dropout=getattr(config.model, "lora_dropout", 0.1),
+                action_head_only=getattr(config.model, "lora_action_head_only", True),
+            )
+            logging.info("Wrapped model with LoRA/PEFT adapters")
+        except Exception as e:
+            logging.warning(f"Failed to enable LoRA/PEFT: {e}")
+
     train_dataset, eval_dataset = pipeline.return_dataset()
     data_collator = pipeline.return_collator()
     processor = pipeline.return_processor()
     processor.save_pretrained(processor_dir)
+
 
 
     # deepspeed config

@@ -145,7 +145,7 @@ def main(config: ServerConfig):
     # Apply sim policy wrapper if needed
     if config.use_sim_policy_wrapper:
         from gr00t.policy.gr00t_policy import Gr00tSimPolicyWrapper
-
+ 
         policy = Gr00tSimPolicyWrapper(policy)
 
     server = PolicyServer(
