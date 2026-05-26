@@ -103,15 +103,19 @@ class Gr00tN1d7DataCollator:
         for key in keys:
             values = [elem[key] for elem in features if key in elem]
             if key == "vlm_content":
-                # Handle vlm_content specially - extract text and images
-                text_list = []
-                image_inputs = []
+                # Each item carries T per-frame conversations: text is a list
+                # of length T, images is a flat list of length T*V (time-major).
+                text_list: list[str] = []
+                image_inputs: list[Image.Image] = []
+                num_frames_set: set[int] = set()
                 for v in values:
-                    curr_text_list = [v["text"]]
-
-                    text_list += curr_text_list
-                    curr_image_inputs = v["images"]
-                    image_inputs += curr_image_inputs
+                    text_list += v["text"]
+                    image_inputs += v["images"]
+                    num_frames_set.add(v["num_frames"])
+                assert len(num_frames_set) == 1, (
+                    f"All batch items must share the same num_frames; got {num_frames_set}"
+                )
+                num_frames = num_frames_set.pop()
 
                 vlm_inputs = self.processor(
                     text=text_list,
@@ -121,6 +125,7 @@ class Gr00tN1d7DataCollator:
                 )
                 for k, v in vlm_inputs.items():
                     batch[k] = v
+                batch["num_frames"] = num_frames
             elif key in (
                 "pixel_values",
                 "image_grid_thw",
@@ -410,12 +415,16 @@ class Gr00tN1d7Processor(BaseProcessor):
             transformed_stacked = torch.stack(transformed_pil)  # (B*T*V, C, H_new, W_new)
             _, img_C_new, img_H_new, img_W_new = transformed_stacked.shape
             transformed_images = transformed_stacked.reshape(
-                B, T * V, img_C_new, img_H_new, img_W_new
+                B, T, V, img_C_new, img_H_new, img_W_new
             ).numpy()
         else:
-            # Rearrange (B, T, V, H, W, C) → (B, T*V, C, H, W) for torchvision
+            # Rearrange (B, T, V, H, W, C) → (B, T, V, C, H, W) for torchvision
             images_perm = images.permute(0, 1, 2, 5, 3, 4).reshape(B, T * V, img_C, img_H, img_W)
-            transformed_images = self.eval_image_transform(images_perm).numpy()
+            transformed_flat = self.eval_image_transform(images_perm)
+            _, _, img_C_new, img_H_new, img_W_new = transformed_flat.shape
+            transformed_images = transformed_flat.reshape(
+                B, T, V, img_C_new, img_H_new, img_W_new
+            ).numpy()
 
         language_key = modality_config["language"].modality_keys[0]
         language = [
@@ -427,11 +436,12 @@ class Gr00tN1d7Processor(BaseProcessor):
         for i in range(B):
             vlm_inputs = self._apply_vlm_processing(transformed_images[i], language[i])
             vc = vlm_inputs["vlm_content"]
-            texts.append(vc["text"])
-            all_images.extend(vc["images"])
+            texts.extend(vc["text"])  # length T per item → B*T total
+            all_images.extend(vc["images"])  # length T*V per item → B*T*V total
         tokenized = self.processor(text=texts, images=all_images, return_tensors="pt", padding=True)
         for k, v in tokenized.items():
             transformed_observation[k] = v
+        transformed_observation["num_frames"] = T
 
         embodiment_id = (
             torch.ones(B, dtype=torch.int32) * self.embodiment_id_mapping[embodiment_tag.value]
@@ -455,36 +465,46 @@ class Gr00tN1d7Processor(BaseProcessor):
 
     def _apply_vlm_processing(self, images: np.ndarray, language: str) -> BatchFeature:
         """
+        Build one VLM conversation per timestep (V images + the same text prompt),
+        instead of one mega-conversation containing all T*V frames. Per-frame
+        token sequences are produced by the collator and re-assembled into
+        [B, T*S, D] by the backbone.
+
         Args:
-            batch:
-                video: [T, C, H, W]
-        Returns: vlm_content format for collation
+            images: [T, V, C, H, W] uint8 array.
+            language: text prompt repeated for every frame.
+        Returns: vlm_content with text/images flattened time-major (length T / T*V).
         """
-        # Convert images to PIL format
-        pil_images = [Image.fromarray(np.transpose(v, (1, 2, 0))) for v in images]
+        assert images.ndim == 5, f"expected [T, V, C, H, W], got {images.shape}"
+        T, V = images.shape[0], images.shape[1]
 
-        # Create conversation with images and text
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    *[{"type": "image", "image": img} for img in pil_images],
-                    {"type": "text", "text": language},
-                ],
-            }
-        ]
+        per_frame_texts: list[str] = []
+        flat_pil_images: list[Image.Image] = []
+        for t in range(T):
+            frame_pil = [
+                Image.fromarray(np.transpose(images[t, v], (1, 2, 0))) for v in range(V)
+            ]
+            conversation = [
+                {
+                    "role": "user",
+                    "content": [
+                        *[{"type": "image", "image": img} for img in frame_pil],
+                        {"type": "text", "text": language},
+                    ],
+                }
+            ]
+            text = self.processor.apply_chat_template(
+                conversation, tokenize=False, add_generation_prompt=False
+            )
+            per_frame_texts.append(text)
+            flat_pil_images.extend(frame_pil)
 
-        # Apply chat template but don't process yet - let collator handle it
-        text = self.processor.apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=False
-        )
-
-        # Return vlm_content format for collation
         return {
             "vlm_content": {
-                "text": text,
-                "images": pil_images,
-                "conversation": conversation,
+                "text": per_frame_texts,
+                "images": flat_pil_images,
+                "num_frames": T,
+                "num_views": V,
             }
         }
 
@@ -612,7 +632,7 @@ class Gr00tN1d7Processor(BaseProcessor):
         return transformed_inputs
 
     def _get_vlm_inputs(
-        self,
+        self, 
         image_keys: list[str],
         images: list[Image.Image],
         masks: dict[str, list[np.ndarray]] | None,
@@ -655,11 +675,11 @@ class Gr00tN1d7Processor(BaseProcessor):
             assert v.dtype == torch.uint8, f"{v} is not a uint8 tensor"
             assert v.shape[1] == 3, f"{v} is not a 3 channel tensor"
 
-        stacked_images = (
-            torch.stack([temporal_stacked_images[view] for view in image_keys], dim=1)
-            .flatten(0, 1)
-            .numpy()
-        )  # (T*V, C, H, W), processor expects numpy array
+        # Shape: (T, V, C, H, W). Kept un-flattened so _apply_vlm_processing
+        # can build one conversation per timestep.
+        stacked_images = torch.stack(
+            [temporal_stacked_images[view] for view in image_keys], dim=1
+        ).numpy()
 
         vlm_inputs = self._apply_vlm_processing(stacked_images, language)
         return vlm_inputs

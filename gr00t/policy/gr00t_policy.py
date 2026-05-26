@@ -102,6 +102,7 @@ class Gr00tPolicy(BasePolicy):
         model = AutoModel.from_pretrained(
             model_dir,
             config=model_config,
+            trust_remote_code=True,
             local_files_only=True,
         )
         model.eval()  # Set model to evaluation mode

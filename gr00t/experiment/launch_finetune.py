@@ -85,6 +85,7 @@ if __name__ == "__main__":
     config.model.window_size = ft_config.window_size
     config.model.use_ema = ft_config.use_ema
     config.model.ema_momentum = ft_config.ema_momentum
+    config.model.state_cross_attn = ft_config.state_cross_attn
     # LoRA / PEFT options
     config.model.use_peft = ft_config.use_peft
     config.model.lora_r = ft_config.lora_r
@@ -101,8 +102,8 @@ if __name__ == "__main__":
     config.model.reproject_vision = False
     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
-    config.model.use_relative_action = True
-
+    config.model.use_relative_action = True 
+ 
     config.training.experiment_name = ft_config.experiment_name
     config.training.start_from_checkpoint = ft_config.base_model_path
     config.training.optim = "adamw_torch"

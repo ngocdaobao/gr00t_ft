@@ -82,7 +82,7 @@ class Qwen3Backbone(torch.nn.Module):
             **extra_kwargs,
             **transformers_loading_kwargs,
         ).eval()
-
+ 
         # needed since we don't use these layers. Also saves compute
         while len(self.model.language_model.layers) > select_layer:
             self.model.language_model.layers.pop(-1)
@@ -131,23 +131,41 @@ class Qwen3Backbone(torch.nn.Module):
                 self.model.language_model.eval()
             if self.model.visual and not self.tune_visual:
                 self.model.visual.eval()
-
+ 
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
         # 0. Set frozen module to eval
+        num_frames = int(vl_input.get("num_frames", 1))
         keys_to_use = ["input_ids", "attention_mask", "pixel_values", "image_grid_thw"]
+        # logging.info(f"SHAPE OF PIXEL VALUES: {vl_input['pixel_values'].shape}")
         vl_input = {k: vl_input[k] for k in keys_to_use}
+
+        # Inputs arrive as B*T conversations packed into the batch dim. Run one
+        # backbone forward, then re-fold the temporal axis into the sequence dim
+        # so downstream (DiT cross-attention) sees [B, T*S, D] like before.
         outputs = self.model(**vl_input, output_hidden_states=True)
         outputs = outputs.hidden_states[-1]
         image_mask = vl_input["input_ids"] == self.model.config.image_token_id
+        # logging.info(f"SHAPE OF IMAGE_MASK: {image_mask.shape}")
         attention_mask = vl_input["attention_mask"] == 1
+        # logging.info(f"SHAPE OF ATTENTION MASK: {attention_mask.shape}")
+
+        BT, S, D = outputs.shape
+        assert BT % num_frames == 0, (
+            f"batch dim {BT} is not divisible by num_frames {num_frames}"
+        )
+        B = BT // num_frames
+        outputs = outputs.reshape(B, num_frames * S, D)
+        attention_mask = attention_mask.reshape(B, num_frames * S)
+        image_mask = image_mask.reshape(B, num_frames * S)
+
         return BatchFeature(
             data={
                 "backbone_features": outputs,
                 "backbone_attention_mask": attention_mask,
                 "image_mask": image_mask,
             }
-        )  # [B, T2, hidden_size]
+        )  # [B, T*S, hidden_size]

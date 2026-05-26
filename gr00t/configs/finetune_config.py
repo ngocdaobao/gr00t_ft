@@ -16,7 +16,7 @@
 # Finetune config used for single node post-training.
 from dataclasses import dataclass
 
-
+ 
 @dataclass
 class FinetuneConfig:
     """
@@ -42,7 +42,7 @@ class FinetuneConfig:
     """
     Path to a Python file defining the modality configuration for the given embodiment. 
     If None, use the pre-registered modality config in `gr00t/configs/data/embodiment_configs.py`. 
-    """
+    """ 
 
     # --- Model Tuning Flags ---
     tune_llm: bool = False
@@ -57,9 +57,10 @@ class FinetuneConfig:
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
-    state_dropout_prob: float = 0.2
+    state_dropout_prob: float = 0.05
     """
     Dropout probability applied to state inputs for regularization during training.
+    Lower values (e.g., 0.05) provide better stability during fine-tuning.
     """
 
     # --- Data Augmentation ---
@@ -167,6 +168,8 @@ class FinetuneConfig:
 
     use_ema: bool = False
     ema_momentum: float = 0.9
+
+    state_cross_attn: bool = True
 
     # --- LoRA / PEFT options ---
     use_peft: bool = False

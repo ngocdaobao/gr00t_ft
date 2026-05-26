@@ -83,7 +83,7 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
-                tune_visual=self.config.model.tune_visual,
+                tune_visual=self.config.model.tune_visual, 
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
                 tune_vlln=self.config.model.tune_vlln,
@@ -103,6 +103,10 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 ema_action_head = Gr00tN1d7ActionHead_EMA(config=self.config.model)
                 ema_action_head.load_state_dict(model.action_head.state_dict(), strict=False)
                 model.action_head = ema_action_head
+            
+            logging.info(f"USE STATE CROSS ATTENTION: {self.config.model.state_cross_attn}")
+            # if self.config.model.state_cross_attn:
+            #     model.action_head.copy_self_attn_to_cross_attn()
 
             missing_keys = loading_info.get("missing_keys", [])
             mask_token_missing = any("mask_token" in key for key in missing_keys)
@@ -116,6 +120,12 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
             other_missing = [k for k in missing_keys if "mask_token" not in k]
+
+            if self.config.model.state_cross_attn:
+                other_missing = [k for k in other_missing if "vl_cross_attention" not in k]
+                if any("vl_cross_attention" in k for k in missing_keys):
+                    logging.info("vl_cross_attention not in checkpoint - will be initialized from self-attention")
+ 
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")
@@ -150,7 +160,7 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             f"Trainable parameters: {trainable_params:,} ({100 * trainable_params / total_params:.2f}%)"
         )
         logging.debug(f"Model architecture: {model}")
-
+ 
         return model
 
     def _get_statistics(

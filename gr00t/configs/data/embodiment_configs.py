@@ -192,11 +192,11 @@ MODALITY_CONFIGS = {
     },
     "libero_sim": {
         "video": ModalityConfig(
-            delta_indices=[0],
+            delta_indices=[-3, -2, -1, 0],
             modality_keys=["image", "wrist_image"],
         ),
         "state": ModalityConfig(
-            delta_indices=[0],
+            delta_indices=[-3, -2, -1, 0],
             modality_keys=["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
         ),
         "action": ModalityConfig(
@@ -222,7 +222,7 @@ MODALITY_CONFIGS = {
             modality_keys=["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
         ),
         "language": ModalityConfig(
-            delta_indices=[0],
+            delta_indices=[-0],
             modality_keys=["annotation.human.action.task_description"],
         ),
     },

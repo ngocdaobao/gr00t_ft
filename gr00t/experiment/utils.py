@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from pathlib import Path
 import shutil
 
@@ -131,3 +132,31 @@ class BestMetricCheckpointCallback(TrainerCallback):
                         shutil.rmtree(self._best_checkpoint_dir)
 
                     self._best_checkpoint_dir = str(best_checkpoint_dir)
+
+
+class SmoothedLossLoggingCallback(TrainerCallback):
+    def __init__(self, smoothing_factor: float = 0.95):
+        self.smoothing_factor = smoothing_factor
+        self.smoothed_loss = None
+        self.logger = logging.getLogger(__name__)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+
+        if "loss" in logs:
+            current_loss = logs["loss"]
+            if self.smoothed_loss is None:
+                self.smoothed_loss = current_loss
+            else:
+                self.smoothed_loss = (
+                    self.smoothing_factor * self.smoothed_loss +
+                    (1 - self.smoothing_factor) * current_loss
+                )
+
+            if state.global_step % args.logging_steps == 0:
+                self.logger.info(
+                    f"Step {state.global_step}: raw_loss={current_loss:.6f}, "
+                    f"smoothed_loss={self.smoothed_loss:.6f}"
+                )
+                logs["smoothed_loss"] = self.smoothed_loss

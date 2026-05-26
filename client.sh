@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export LIBERO_CONFIG_PATH=/pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/Isaac-GR00T/.libero
+
 TASKS=(
     "libero_sim/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate"
     "libero_sim/pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate"
@@ -13,8 +15,11 @@ TASKS=(
     "libero_sim/pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate"
 )
 
-mkdir -p /pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/output/gr00t_n1d7_ema/libero_spatial
-touch /pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/output/gr00t_n1d7_ema/libero_spatial/results.txt
+N_ENVS=5
+
+
+mkdir -p /pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/output/gr00t_n1d7/libero_spatial
+
 
 for task in "${TASKS[@]}"; do
     echo "Evaluating task: $task"
@@ -24,8 +29,8 @@ for task in "${TASKS[@]}"; do
         --policy-client-host 127.0.0.1 \
         --policy-client-port 5555 \
         --max-episode-steps 720 \
-        --video_dir /pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/output/gr00t_n1d7_ema/libero_spatial/$task_name \
+        --video_dir /pfss/mlde/workspaces/mlde_wsp_MGPATH/ngoc/output/gr00t_n1d7/libero_spatial/$task_name \
         --env-name "$task" \
         --n-action-steps 8 \
-        --n-envs 1
+        --n-envs $N_ENVS 
 done

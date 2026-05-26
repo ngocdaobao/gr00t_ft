@@ -17,6 +17,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
+import logging
 from pathlib import Path
 import sys
 import time
@@ -32,7 +33,7 @@ import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 import tyro
-
+import logging
 
 class TrtMode(str, Enum):
     """TensorRT inference modes."""
@@ -449,6 +450,8 @@ def run_gr00t_sim_policy(
     trt_engine_path: str = "",
     trt_mode: TrtMode = TrtMode.N17_FULL_PIPELINE,
     seed: int | None = None,
+    video_delta_indices: list[int] | None = None,
+    state_delta_indices: list[int] | None = None,
 ):
     # seed_everything resolves `None` via the GR00T_EVAL_SEED env var and is a
     # no-op when that is also unset, so the historical non-deterministic
@@ -465,12 +468,17 @@ def run_gr00t_sim_policy(
             video_dir = f"/tmp/sim_eval_videos_{model_slug}_ac{n_action_steps}_{uuid.uuid4()}"
         else:
             video_dir = f"/tmp/sim_eval_videos_{env_name}_ac{n_action_steps}_{uuid.uuid4()}"
+    # In run_gr00t_sim_policy, just before creating wrapper_configs:
+    logging.info(f"[DEBUG] video_delta_indices={video_delta_indices}, state_delta_indices={state_delta_indices}")
+
     wrapper_configs = WrapperConfigs(
         video=VideoConfig(
             video_dir=video_dir,
             max_episode_steps=max_episode_steps,
         ),
         multistep=MultiStepConfig(
+            video_delta_indices=np.array(video_delta_indices) if video_delta_indices is not None else np.array([0]),
+            state_delta_indices=np.array(state_delta_indices) if state_delta_indices is not None else np.array([0]),
             n_action_steps=n_action_steps,
             max_episode_steps=max_episode_steps,
             terminate_on_success=True,
@@ -542,6 +550,14 @@ class RolloutConfig:
     ``GR00T_EVAL_SEED`` env var; if that is also unset, keeps the historical
     non-deterministic behavior."""
 
+    # video_delta_indices: list[int] = field(default_factory=lambda: [-3, -2, -1, 0])
+    """Video frame delta indices (must match training modality config)."""
+    video_delta_indices: list[int] = field(default_factory=lambda: [0])
+    # state_delta_indices: list[int] = field(default_factory=lambda: [-3, -2, -1, 0])
+    state_delta_indices: list[int] = field(default_factory=lambda: [0])
+    """State delta indices (must match training modality config)."""
+
+
 
 if __name__ == "__main__":
     args = tyro.cli(RolloutConfig)
@@ -569,6 +585,8 @@ if __name__ == "__main__":
         trt_engine_path=args.trt_engine_path,
         trt_mode=args.trt_mode,
         seed=args.seed,
+        video_delta_indices=args.video_delta_indices,
+        state_delta_indices=args.state_delta_indices,
     )
     print("results: ", results)
     print("success rate: ", np.mean(results[1]))

@@ -92,7 +92,7 @@ class Gr00tN1d7Config(PretrainedConfig):
             "positional_embeddings": None,
             "num_layers": 16,
             "num_attention_heads": 32,
-            "attention_head_dim": 48,
+            "attention_head_dim": 48, 
             "norm_type": "ada_norm",
             "dropout": 0.2,
             "final_dropout": True,
@@ -126,6 +126,7 @@ class Gr00tN1d7Config(PretrainedConfig):
     window_size: int = 5
     use_ema: bool = False
     ema_momentum: float = 0.9
+    state_cross_attn: bool = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -162,6 +163,13 @@ class Gr00tN1d7Config(PretrainedConfig):
             }
             cfg = {k: v for k, v in cfg.items() if k not in exclude_keys}
 
+        # Explicitly include new fields that must be saved for proper checkpoint loading
+        cfg["state_cross_attn"] = self.state_cross_attn
+        cfg["use_history"] = self.use_history
+        cfg["window_size"] = self.window_size
+        cfg["use_ema"] = self.use_ema
+        cfg["ema_momentum"] = self.ema_momentum
+
         return cfg
 
     def to_filtered_json(self, exclude_augment: bool = True, **kwargs) -> str:
@@ -180,6 +188,16 @@ class Gr00tN1d7Config(PretrainedConfig):
             default=default,
             **kwargs,
         )
+
+    def to_dict(self) -> dict:
+        """Override to ensure state_cross_attn is saved in checkpoint config."""
+        cfg = super().to_dict()
+        cfg["state_cross_attn"] = self.state_cross_attn
+        cfg["use_history"] = self.use_history
+        cfg["window_size"] = self.window_size
+        cfg["use_ema"] = self.use_ema
+        cfg["ema_momentum"] = self.ema_momentum
+        return cfg
 
 
 register_model_config("Gr00tN1d7", Gr00tN1d7Config)

@@ -32,10 +32,10 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
 
     # Optimization
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-5
     lr_scheduler_type: str = "cosine"
     weight_decay: float = 1e-5
-    warmup_ratio: float = 0.05
+    warmup_ratio: float = 0.1
     warmup_steps: int = 0  # this will override warmup_ratio
     max_grad_norm: float = 1.0
 

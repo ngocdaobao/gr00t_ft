@@ -170,3 +170,7 @@ offline_open_loop_eval_plots/
 /data
 CLAUDE.md
 upload_ckpt.py
+client.sh
+server.sh
+.libero
+libero_ft.sh

@@ -31,7 +31,7 @@ def extract_step_data(
     modality_configs: dict[str, ModalityConfig],
     embodiment_tag: EmbodimentTag,
     allow_padding: bool = False,
-) -> VLAStepData:
+) -> VLAStepData: 
     step_data = {}
 
     # Extract data for each configured modality

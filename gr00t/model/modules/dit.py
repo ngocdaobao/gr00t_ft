@@ -25,6 +25,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+import logging
 
 def _is_spark_sm121() -> bool:
     if not torch.cuda.is_available():
@@ -475,6 +476,78 @@ class SelfAttentionTransformer(ModelMixin, ConfigMixin):
         # Process through transformer blocks
         for idx, block in enumerate(self.transformer_blocks):
             hidden_states = block(hidden_states)
+            all_hidden_states.append(hidden_states)
+
+        if return_all_hidden_states:
+            return hidden_states, all_hidden_states
+        else:
+            return hidden_states
+
+
+class CrossAttentionTransformer(ModelMixin, ConfigMixin):
+    _supports_gradient_checkpointing = True
+
+    @register_to_config
+    def __init__(
+        self,
+        num_attention_heads: int = 8,
+        attention_head_dim: int = 64,
+        output_dim: int = 26,
+        num_layers: int = 12,
+        dropout: float = 0.1,
+        cross_attention_dim: Optional[int] = None,
+        attention_bias: bool = True,
+        activation_fn: str = "gelu-approximate",
+        num_embeds_ada_norm: Optional[int] = 1000,
+        upcast_attention: bool = False,
+        max_num_positional_embeddings: int = 512,
+        compute_dtype=torch.float32,
+        final_dropout: bool = True,
+        positional_embeddings: Optional[str] = "sinusoidal",
+        interleave_self_attention=False,
+    ):
+        super().__init__()
+
+        self.attention_head_dim = attention_head_dim
+        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+        self.gradient_checkpointing = False
+        self.cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else self.inner_dim
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlock(
+                    self.inner_dim,
+                    self.config.num_attention_heads,
+                    self.config.attention_head_dim,
+                    dropout=self.config.dropout,
+                    activation_fn=self.config.activation_fn,
+                    attention_bias=self.config.attention_bias,
+                    cross_attention_dim=self.cross_attention_dim,
+                    upcast_attention=self.config.upcast_attention,
+                    positional_embeddings=positional_embeddings,
+                    num_positional_embeddings=self.config.max_num_positional_embeddings,
+                    final_dropout=final_dropout,
+                )
+                for _ in range(self.config.num_layers)
+            ]
+        )
+        print(
+            "Total number of SelfAttentionTransformer parameters: ",
+            sum(p.numel() for p in self.parameters() if p.requires_grad),
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,  # Shape: (B, T, D)
+        encoder_hidden_states: torch.Tensor,  # Shape: (B, S, D)
+        return_all_hidden_states: bool = False,
+    ):
+        # Process through transformer blocks - single pass through the blocks
+        hidden_states = hidden_states.contiguous()
+        all_hidden_states = [hidden_states]
+
+        # Process through transformer blocks
+        for idx, block in enumerate(self.transformer_blocks):
+            hidden_states = block(hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states)
             all_hidden_states.append(hidden_states)
 
         if return_all_hidden_states:

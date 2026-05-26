@@ -15,6 +15,7 @@
 
 import logging
 from typing import Any, Tuple
+import copy 
 
 import torch
 import torch.nn.functional as F
@@ -26,7 +27,7 @@ from transformers.feature_extraction_utils import BatchFeature
 import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
-from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
+from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer, CrossAttentionTransformer
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
@@ -46,14 +47,13 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.input_embedding_dim = config.input_embedding_dim
-
         if config.use_alternate_vl_dit:
             self.model = AlternateVLDiT(
                 **config.diffusion_model_cfg,
                 cross_attention_dim=config.backbone_embedding_dim,
                 attend_text_every_n_blocks=config.attend_text_every_n_blocks,
             )
-            logger.info("Using AlternateVLDiT for diffusion model")
+            logger.info(f"Using AlternateVLDiT for diffusion model")
         else:
             self.model = DiT(
                 **config.diffusion_model_cfg,
@@ -63,13 +63,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.action_dim = config.max_action_dim
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
+        self.history_length = config.state_history_length
 
         self.state_encoder = CategorySpecificMLP(
             num_categories=config.max_num_embodiments,
-            input_dim=config.max_state_dim * config.state_history_length,
+            # input_dim=config.max_state_dim * config.state_history_length,
+            input_dim=config.max_state_dim,
             hidden_dim=self.hidden_size,
             output_dim=self.input_embedding_dim,
         )
+
         self.action_encoder = MultiEmbodimentActionEncoder(
             action_dim=self.action_dim,
             hidden_size=self.input_embedding_dim,
@@ -81,18 +84,32 @@ class Gr00tN1d7ActionHead(nn.Module):
             hidden_dim=self.hidden_size,
             output_dim=self.action_dim,
         )
-
+        
         self.vlln = (
             nn.LayerNorm(config.backbone_embedding_dim) if config.use_vlln else nn.Identity()
         )
 
         vl_self_attention_cfg = getattr(config, "vl_self_attention_cfg", None)
+
         if vl_self_attention_cfg and vl_self_attention_cfg.get("num_layers", 0) > 0:
             self.vl_self_attention = SelfAttentionTransformer(**vl_self_attention_cfg)
         else:
             self.vl_self_attention = nn.Identity()
 
-        if config.add_pos_embed:
+        if vl_self_attention_cfg and config.state_cross_attn:
+            vl_cross_attention_cfg = copy.deepcopy(vl_self_attention_cfg)
+            vl_cross_attention_cfg['cross_attention_dim'] = config.backbone_embedding_dim
+            self.vl_cross_attention = CrossAttentionTransformer(**vl_cross_attention_cfg)
+            self.state_projector_vl_cross_attention = nn.Sequential(
+                nn.LayerNorm(config.input_embedding_dim),
+                nn.Linear(config.input_embedding_dim, config.backbone_embedding_dim),
+                nn.GELU(),
+            )
+            nn.init.xavier_uniform_(self.state_projector_vl_cross_attention[1].weight, gain=0.5)
+            nn.init.zeros_(self.state_projector_vl_cross_attention[1].bias)
+            self.vl_cross_attention_output_norm = nn.LayerNorm(config.backbone_embedding_dim)
+
+        if config.add_pos_embed:    
             self.position_embedding = nn.Embedding(config.max_seq_len, self.input_embedding_dim)
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
 
@@ -124,6 +141,10 @@ class Gr00tN1d7ActionHead(nn.Module):
         if not tune_vlln:
             self.vlln.requires_grad_(False)
             self.vl_self_attention.requires_grad_(False)
+            if self.config.state_cross_attn:
+                self.vl_cross_attention.requires_grad_(False)
+                self.state_projector_vl_cross_attention.requires_grad_(False)
+                self.vl_cross_attention_output_norm.requires_grad_(False)
         logger.debug(f"Tune action head projector: {self.tune_projector}")
         logger.debug(f"Tune action head diffusion model: {self.tune_diffusion_model}")
         logger.debug(f"Tune action head vlln: {self.tune_vlln}")
@@ -153,16 +174,98 @@ class Gr00tN1d7ActionHead(nn.Module):
             if not self.tune_vlln:
                 self.vlln.eval()
                 self.vl_self_attention.eval()
+                if self.config.state_cross_attn:
+                    self.vl_cross_attention.eval()
+                    self.state_projector_vl_cross_attention.eval()
+                    self.vl_cross_attention_output_norm.eval()
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
         sample = (1 - sample) * self.config.noise_s
         return sample
 
+    def copy_self_attn_to_cross_attn(self):
+        assert self.config.state_cross_attn, "state_cross_attn must be True to copy self-attn to cross-attn"
+        for self_block, cross_block in zip(self.vl_self_attention.transformer_blocks, self.vl_cross_attention.transformer_blocks):
+            cross_block.attn1.load_state_dict(self_block.attn1.state_dict())
+
     def process_backbone_output(self, backbone_output: BatchFeature) -> BatchFeature:
         backbone_features = backbone_output["backbone_features"]
         backbone_features = self.vlln(backbone_features)
         backbone_features = self.vl_self_attention(backbone_features)
+        backbone_output["backbone_features"] = backbone_features
+        return backbone_output
+
+    def process_state_features(self, state_features: torch.Tensor):
+        state_featues = state_features.view(state_features.shape[0], self.history_length, -1)
+        return state_features
+    
+    def process_state_embed_backbone_cross_attn(self, state_features: torch.Tensor, backbone_output: torch.Tensor):
+        backbone_features = backbone_output["backbone_features"]
+        if backbone_features.ndim == 3:
+            batch_size = backbone_features.shape[0]
+            seq_len = backbone_features.shape[1]
+            feat_dim = backbone_features.shape[2]
+
+            assert seq_len % self.history_length == 0, "backbone sequence length must be divisible by state history length"
+            s_per_t = seq_len // self.history_length
+
+            # Reshape for cross-attention: (B, seq_len, D) -> (B, T, S, D) -> (B*T, S, D)
+            backbone_features = backbone_features.view(
+                batch_size,
+                self.history_length,
+                s_per_t,
+                feat_dim
+            ) # (B, T, S, D)
+            backbone_features = backbone_features.view(
+                batch_size * self.history_length,
+                s_per_t,
+                feat_dim
+            ) # (B*T, S, D)
+
+            # Reshape state features: (B, T, D) -> (B*T, D)
+            projected_state_features = self.state_projector_vl_cross_attention(state_features)
+            projected_state_features = torch.clamp(projected_state_features, min=-10.0, max=10.0)
+            projected_state_features = projected_state_features.view(
+                batch_size * self.history_length,
+                -1
+            ) # (B*T, D)
+            projected_state_features = projected_state_features.unsqueeze(1)  # (B*T, 1, D)
+
+            # Apply cross-attention
+            backbone_features = self.vl_cross_attention(
+                hidden_states=backbone_features,
+                encoder_hidden_states=projected_state_features,
+            ) # (B*T, S, D)
+
+            backbone_features = torch.clamp(backbone_features, min=-10.0, max=10.0)
+
+            # Normalize cross-attention output for stability
+            backbone_features = self.vl_cross_attention_output_norm(backbone_features)
+
+            # Reshape back to original batch size: (B*T, S, D) -> (B, T*S, D)
+            backbone_features = backbone_features.view(
+                batch_size,
+                self.history_length * s_per_t,
+                feat_dim
+            )
+
+            # Also reshape backbone_attention_mask to match (B, seq_len) -> (B, T*S)
+            if "backbone_attention_mask" in backbone_output:
+                backbone_attention_mask = backbone_output["backbone_attention_mask"]
+                # Already in (B, seq_len) = (B, T*S) format, no change needed
+                # But verify the shape is correct
+                assert backbone_attention_mask.shape == (batch_size, seq_len)
+                backbone_output["backbone_attention_mask"] = backbone_attention_mask
+
+            # Also reshape image_mask if present (B, seq_len) -> (B, T*S)
+            if "image_mask" in backbone_output:
+                image_mask = backbone_output["image_mask"]
+                # Already in (B, seq_len) = (B, T*S) format, no change needed
+                assert image_mask.shape == (batch_size, seq_len)
+                backbone_output["image_mask"] = image_mask
+        else:
+            assert backbone_features.ndim != 3, "Expected backbone features to be either (B, seq_len, D) or (B, D)"
         backbone_output["backbone_features"] = backbone_features
         return backbone_output
 
@@ -188,21 +291,24 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.set_frozen_modules_to_eval_mode()
 
         backbone_output = self.process_backbone_output(backbone_output)
-
         # Get vision and language embeddings.
+        embodiment_id = action_input.embodiment_id
+        state_features = self.process_state_features(action_input.state)
+        state_features = self.state_encoder(action_input.state, embodiment_id)
+
+        backbone_output = self.process_state_embed_backbone_cross_attn(state_features, backbone_output)
+
         vl_embeds = backbone_output.backbone_features
         device = vl_embeds.device
 
         # Get embodiment ID.
-        embodiment_id = action_input.embodiment_id
-
+        # logging.info(f"SHAPE OF EMBODIMENT ID: {embodiment_id.shape}")
         # Handle state history
         assert action_input.state.shape[1] == self.config.state_history_length
-        action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
-
+        # action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
+        # logging.info(f"SHAPE OF INPUT STATE: {action_input.state.shape}")
         # Embed state.
-        state_features = self.state_encoder(action_input.state, embodiment_id)
-
+        
         # Dropout state features (training only): zero out dropped states.
         if self.training and self.state_dropout_prob > 0:
             do_dropout = (
@@ -264,6 +370,8 @@ class Gr00tN1d7ActionHead(nn.Module):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
+        loss = torch.clamp(loss, min=0.0, max=1e4)
+
         return {
             "loss": loss,
             "action_loss": action_loss,
@@ -302,10 +410,15 @@ class Gr00tN1d7ActionHead(nn.Module):
         current_T = state.shape[1]
         assert current_T == self.config.state_history_length, "current_T != state_history_length"
         # Reshape state from [B, state_history_length, max_state_dim] to [B, 1, state_history_length * max_state_dim]
-        state = state.view(state.shape[0], 1, -1)
+        # state = state.view(state.shape[0], 1, -1)
 
         # Embed state.
+
         state_features = self.state_encoder(state, embodiment_id)
+        if self.config.state_cross_attn:
+            print(f"USE ARM POSE")
+            backbone_output = self.process_state_embed_backbone_cross_attn(state_features, backbone_output)
+            vl_embeds = backbone_output.backbone_features
 
         return BatchFeature(data={"backbone_features": vl_embeds, "state_features": state_features})
 
@@ -551,6 +664,8 @@ class Gr00tN1d7(PreTrainedModel):
 
         # NOTE -- currently the eval code doesn't use collator, so we need to add it here
         # this should ideally be fixed upstream
+        # logging.info(f"Input keys after collator processing: {inputs.keys()}")
+
         if "vlm_content" in inputs:
             # Fix for n_envs > 1: Process all environments' VLM content, not just the first
             vlm_content_list = inputs["vlm_content"]
@@ -562,6 +677,10 @@ class Gr00tN1d7(PreTrainedModel):
             prep = self.collator([{"vlm_content": vlm} for vlm in vlm_content_list])["inputs"]
             inputs.pop("vlm_content")
             inputs.update(prep)
+        
+        # num_frames is a plain Python int — pull it out so tree.map_structure
+        # doesn't try to call .to(device) on it, then re-attach to backbone_inputs.
+        num_frames = inputs.pop("num_frames", 1)
 
         backbone_inputs = self.backbone.prepare_input(inputs)
         action_inputs = self.action_head.prepare_input(inputs)
@@ -575,6 +694,7 @@ class Gr00tN1d7(PreTrainedModel):
 
         backbone_inputs = tree.map_structure(to_device_with_dtype, backbone_inputs)
         action_inputs = tree.map_structure(to_device_with_dtype, action_inputs)
+        backbone_inputs["num_frames"] = int(num_frames)
 
         return backbone_inputs, action_inputs
 
@@ -602,7 +722,6 @@ class Gr00tN1d7(PreTrainedModel):
         """
         # Prepare inputs for backbone and action head
         backbone_inputs, action_inputs = self.prepare_input(inputs)
-
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
@@ -668,8 +787,9 @@ class Gr00tN1d7ActionHead_history(Gr00tN1d7ActionHead):
 
         # Handle state history
         assert action_input.state.shape[1] == self.config.state_history_length
+        # logging.info(f"Current state shape before reshape: {action_input.state.shape}")
         action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
-
+        # logging.info(f"Current state shape after reshape: {action_input.state.shape}")
         # Embed state.
         state_features = self.state_encoder(action_input.state, embodiment_id)
         # logging.info(f"Current state features shape: {state_features.shape}")
@@ -774,6 +894,8 @@ class Gr00tN1d7ActionHead_history(Gr00tN1d7ActionHead):
         action_mask = action_input.action_mask
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+
+        loss = torch.clamp(loss, min=0.0, max=1e4)
 
         self.history_cache["state"][-1] = self.history_cache["state"][-1].detach()
         self.history_cache["obs"][-1] = self.history_cache["obs"][-1].detach()
@@ -1150,6 +1272,8 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
+        loss = torch.clamp(loss, min=0.0, max=1e4)
+
         return {
             "loss": loss,
             "action_loss": action_loss,
@@ -1157,7 +1281,7 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }
-    
+
     @torch.no_grad()
     def get_action_with_features(
         self,
