@@ -1095,8 +1095,14 @@ class Gr00tN1d7ActionHead_history(Gr00tN1d7ActionHead):
 class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
     def __init__(self, config: Gr00tN1d7Config):
         super().__init__(config)
-        # Create EMA copy of the action head for inference
         self.momentum = config.ema_momentum
+        self.vl_mem = None
+        self.state_mem = None
+        self.vl_mem_eval = None
+        self.state_mem_eval = None
+
+    def reset_eval_memory(self):
+        # Reset EMA state at episode boundaries so features do not bleed across rollouts.
         self.vl_mem = None
         self.state_mem = None
         self.vl_mem_eval = None
@@ -1122,15 +1128,6 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
         """
         # Set frozen modules to eval
         # logging.info(f"EMA ACTION HEAD: momentum={self.momentum}")
-
-        def pad_seq_len(x, target_len):
-            seq_len = x.shape[1]
-
-            if seq_len < target_len:
-                pad = target_len - seq_len
-                x = F.pad(x, (0, 0, 0, pad))  # pad dim=1
-
-            return x
 
         self.set_frozen_modules_to_eval_mode()
 
@@ -1181,13 +1178,12 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
         if self.vl_mem is None or self.state_mem is None:
             self.vl_mem = vl_embeds
             self.state_mem = state_features
+        elif self.vl_mem.shape[1] != vl_embeds.shape[1]:
+            # Reset on seq_len changes so EMA does not keep a stale high-water-mark sequence.
+            self.vl_mem = vl_embeds
+            self.state_mem = state_features
         else:
-            max_len = max(self.vl_mem.shape[1], vl_embeds.shape[1])
-
-            mem = pad_seq_len(self.vl_mem, max_len)
-            cur = pad_seq_len(vl_embeds, max_len)
-
-            self.vl_mem = (1 - self.momentum) * mem + self.momentum * cur
+            self.vl_mem = (1 - self.momentum) * self.vl_mem + self.momentum * vl_embeds
             self.state_mem = (1 - self.momentum) * self.state_mem + self.momentum * state_features
         vl_embeds = self.vl_mem
         state_features = self.state_mem
@@ -1301,16 +1297,6 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
             embodiment_id: [B] (embodiment IDs)
             backbone_output: Output from the backbone model
         """
-        logging.info(f"EMA get_action_with_features: momentum={self.momentum}")
-        def pad_seq_len(x, target_len):
-            seq_len = x.shape[1]
-
-            if seq_len < target_len:
-                pad = target_len - seq_len
-                x = F.pad(x, (0, 0, 0, pad))  # pad dim=1
-
-            return x
-        
         vl_embeds = backbone_features
 
         # Set initial actions as the sampled noise.
@@ -1366,13 +1352,12 @@ class Gr00tN1d7ActionHead_EMA(Gr00tN1d7ActionHead):
         if self.vl_mem_eval is None or self.state_mem_eval is None:
             self.vl_mem_eval = vl_embeds
             self.state_mem_eval = state_features
+        elif self.vl_mem_eval.shape[1] != vl_embeds.shape[1]:
+            # Reset on seq_len changes so eval attention cost tracks the current rollout.
+            self.vl_mem_eval = vl_embeds
+            self.state_mem_eval = state_features
         else:
-            max_len = max(self.vl_mem_eval.shape[1], vl_embeds.shape[1])
-
-            mem = pad_seq_len(self.vl_mem_eval, max_len)
-            cur = pad_seq_len(vl_embeds, max_len)
-
-            self.vl_mem_eval = (1 - self.momentum) * mem + self.momentum * cur
+            self.vl_mem_eval = (1 - self.momentum) * self.vl_mem_eval + self.momentum * vl_embeds
             self.state_mem_eval = (1 - self.momentum) * self.state_mem_eval + self.momentum * state_features
         vl_embeds = self.vl_mem_eval
         state_features = self.state_mem_eval
